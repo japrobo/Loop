@@ -26,7 +26,8 @@ class StatusViewController: UIViewController, NCWidgetProviding {
         }
     }
     @IBOutlet weak var subtitleLabel: UILabel!
-    @IBOutlet weak var glucoseChartContentView: LoopUI.ChartContentView!
+    @IBOutlet weak var insulinLabel: UILabel!
+    @IBOutlet weak var glucoseChartContentView: LoopUI.ChartContainerView!
 
     private lazy var charts: StatusChartsManager = {
         let charts = StatusChartsManager(
@@ -61,40 +62,12 @@ class StatusViewController: UIViewController, NCWidgetProviding {
     var defaults: UserDefaults?
     final var observationContext = 1
 
-    var loopCompletionHUD: LoopCompletionHUDView! {
-        get {
-            return hudView.loopCompletionHUD
-        }
-    }
-
-    var glucoseHUD: GlucoseHUDView! {
-        get {
-            return hudView.glucoseHUD
-        }
-    }
-
-    var basalRateHUD: BasalRateHUDView! {
-        get {
-            return hudView.basalRateHUD
-        }
-    }
-
-    var reservoirVolumeHUD: ReservoirVolumeHUDView! {
-        get {
-            return hudView.reservoirVolumeHUD
-        }
-    }
-
-    var batteryHUD: BatteryLevelHUDView! {
-        get {
-            return hudView.batteryHUD
-        }
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         subtitleLabel.isHidden = true
         subtitleLabel.textColor = .subtitleLabelColor
+        insulinLabel.isHidden = true
+        insulinLabel.textColor = .subtitleLabelColor
 
         let tapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(openLoopApp(_:)))
         view.addGestureRecognizer(tapGestureRecognizer)
@@ -125,11 +98,13 @@ class StatusViewController: UIViewController, NCWidgetProviding {
     }
     
     func widgetActiveDisplayModeDidChange(_ activeDisplayMode: NCWidgetDisplayMode, withMaximumSize maxSize: CGSize) {
+        let compactHeight = hudView.systemLayoutSizeFitting(maxSize).height + subtitleLabel.systemLayoutSizeFitting(maxSize).height
+
         switch activeDisplayMode {
         case .compact:
-            preferredContentSize = maxSize
+            preferredContentSize = CGSize(width: maxSize.width, height: compactHeight)
         case .expanded:
-            preferredContentSize = CGSize(width: maxSize.width, height: 210)
+            preferredContentSize = CGSize(width: maxSize.width, height: compactHeight + 100)
         }
     }
 
@@ -168,7 +143,7 @@ class StatusViewController: UIViewController, NCWidgetProviding {
             return NCUpdateResult.failed
         }
         if let lastGlucose = context.glucose?.last {
-            glucoseHUD.setGlucoseQuantity(lastGlucose.value,
+            hudView.glucoseHUD.setGlucoseQuantity(lastGlucose.value,
                at: lastGlucose.startDate,
                unit: lastGlucose.unit,
                sensor: context.sensor
@@ -176,24 +151,25 @@ class StatusViewController: UIViewController, NCWidgetProviding {
         }
         
         if let batteryPercentage = context.batteryPercentage {
-            batteryHUD.batteryLevel = Double(batteryPercentage)
+            hudView.batteryHUD.batteryLevel = Double(batteryPercentage)
         }
         
         if let reservoir = context.reservoir {
-            reservoirVolumeHUD.reservoirLevel = min(1, max(0, Double(reservoir.unitVolume / Double(reservoir.capacity))))
-            reservoirVolumeHUD.setReservoirVolume(volume: reservoir.unitVolume, at: reservoir.startDate)
+            hudView.reservoirVolumeHUD.reservoirLevel = min(1, max(0, Double(reservoir.unitVolume / Double(reservoir.capacity))))
+            hudView.reservoirVolumeHUD.setReservoirVolume(volume: reservoir.unitVolume, at: reservoir.startDate)
         }
 
         if let netBasal = context.netBasal {
-            basalRateHUD.setNetBasalRate(netBasal.rate, percent: netBasal.percentage, at: netBasal.startDate)
+            hudView.basalRateHUD.setNetBasalRate(netBasal.rate, percent: netBasal.percentage, at: netBasal.start)
         }
 
         if let loop = context.loop {
-            loopCompletionHUD.dosingEnabled = loop.dosingEnabled
-            loopCompletionHUD.lastLoopCompleted = loop.lastCompleted
+            hudView.loopCompletionHUD.dosingEnabled = loop.dosingEnabled
+            hudView.loopCompletionHUD.lastLoopCompleted = loop.lastCompleted
         }
 
         subtitleLabel.isHidden = true
+        insulinLabel.isHidden = true
 
         let dateFormatter: DateFormatter = {
             let dateFormatter = DateFormatter()
@@ -203,7 +179,25 @@ class StatusViewController: UIViewController, NCWidgetProviding {
             return dateFormatter
         }()
 
+        let insulinFormatter: NumberFormatter = {
+            let numberFormatter = NumberFormatter()
+            
+            numberFormatter.numberStyle = .decimal
+            numberFormatter.minimumFractionDigits = 1
+            numberFormatter.maximumFractionDigits = 1
+            
+            return numberFormatter
+        }()
 
+        if let activeInsulin = context.activeInsulin, let valueStr = insulinFormatter.string(from:NSNumber(value:activeInsulin))
+        {
+            insulinLabel.text = String(format: NSLocalizedString(
+                    "IOB %1$@ U",
+                    comment: "The subtitle format describing units of active insulin. (1: localized insulin value description)"),
+                                        valueStr)
+            insulinLabel.isHidden = false
+        }
+        
         if let glucose = context.glucose,
             glucose.count > 0 {
             let unit = glucose[0].unit
@@ -221,6 +215,10 @@ class StatusViewController: UIViewController, NCWidgetProviding {
             if let first = glucose.first {
                 charts.startDate = first.startDate
             }
+            
+            // Showing the whole history plus full prediction in the glucose plot
+            // is a little crowded, so limit it to three hours in the future:
+            charts.maxEndDate = Date().addingTimeInterval(TimeInterval(hours: 3))
 
             if let predictedGlucose = context.predictedGlucose?.samples {
                 charts.predictedGlucosePoints = predictedGlucose.map {
@@ -237,7 +235,7 @@ class StatusViewController: UIViewController, NCWidgetProviding {
                         subtitleLabel.text = String(
                             format: NSLocalizedString(
                                 "Eventually %1$@ %2$@",
-                                comment: "The subtitle format describing eventual glucose. (1: localized glucose value description) (2: localized glucose units description)"),
+                                comment: "The subtitle format describing eventual glucose.  (1: localized glucose value description) (2: localized glucose units description)"),
                             eventualGlucoseNumberString,
                             unit.glucoseUnitDisplayString
                         )

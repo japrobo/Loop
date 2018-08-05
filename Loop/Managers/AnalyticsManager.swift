@@ -10,7 +10,7 @@ import Foundation
 import Amplitude
 
 
-final class AnalyticsManager {
+final class AnalyticsManager: IdentifiableClass {
 
     var amplitudeService: AmplitudeService {
         didSet {
@@ -24,21 +24,19 @@ final class AnalyticsManager {
         } else {
             amplitudeService = AmplitudeService(APIKey: nil)
         }
+
+        logger = DiagnosticLogger.shared?.forCategory(type(of: self).className)
     }
 
-    static let sharedManager = AnalyticsManager()
+    static let shared = AnalyticsManager()
 
     // MARK: - Helpers
 
-    private var isSimulator: Bool = TARGET_OS_SIMULATOR != 0
+    private var logger: CategoryLogger?
 
     private func logEvent(_ name: String, withProperties properties: [AnyHashable: Any]? = nil, outOfSession: Bool = false) {
-        if isSimulator {
-            NSLog("\(name) \(properties ?? [:])")
-        } else {
-            amplitudeService.client?.logEvent(name, withEventProperties: properties, outOfSession: outOfSession)
-        }
-
+        logger?.debug("\(name) \(properties ?? [:])")
+        amplitudeService.client?.logEvent(name, withEventProperties: properties, outOfSession: outOfSession)
     }
 
     // MARK: - UIApplicationDelegate
@@ -64,19 +62,27 @@ final class AnalyticsManager {
     // MARK: - Config Events
 
     func didChangeRileyLinkConnectionState() {
-        logEvent("RileyLink Connection")
+        logEvent("RileyLink Connection", outOfSession: true)
     }
 
     func transmitterTimeDidDrift(_ drift: TimeInterval) {
-        logEvent("Transmitter time change", withProperties: ["value" : drift])
+        logEvent("Transmitter time change", withProperties: ["value" : drift], outOfSession: true)
+    }
+
+    func pumpTimeDidDrift(_ drift: TimeInterval) {
+        logEvent("Pump time change", withProperties: ["value": drift], outOfSession: true)
+    }
+
+    func punpTimeZoneDidChange() {
+        logEvent("Pump time zone change", outOfSession: true)
     }
 
     func pumpBatteryWasReplaced() {
-        logEvent("Pump battery replacement")
+        logEvent("Pump battery replacement", outOfSession: true)
     }
 
     func reservoirWasRewound() {
-        logEvent("Pump reservoir rewind")
+        logEvent("Pump reservoir rewind", outOfSession: true)
     }
 
     func didChangeBasalRateSchedule() {
@@ -87,8 +93,8 @@ final class AnalyticsManager {
         logEvent("Carb ratio change")
     }
 
-    func didChangeInsulinActionDuration() {
-        logEvent("Insulin action duration change")
+    func didChangeInsulinModel() {
+        logEvent("Insulin model change")
     }
 
     func didChangeInsulinSensitivitySchedule() {
@@ -100,7 +106,7 @@ final class AnalyticsManager {
     }
 
     func didChangeLoopSettings(from oldValue: LoopSettings, to newValue: LoopSettings) {
-        logEvent("Loop settings change")
+        logEvent("Loop settings change", outOfSession: true)
 
         if newValue.maximumBasalRatePerHour != oldValue.maximumBasalRatePerHour {
             logEvent("Maximum basal rate change")
@@ -110,8 +116,16 @@ final class AnalyticsManager {
             logEvent("Maximum bolus change")
         }
 
-        if newValue.minimumBGGuard != oldValue.minimumBGGuard {
+        if newValue.suspendThreshold != oldValue.suspendThreshold {
             logEvent("Minimum BG Guard change")
+        }
+
+        if newValue.dosingEnabled != oldValue.dosingEnabled {
+            logEvent("Closed loop enabled change")
+        }
+
+        if newValue.retrospectiveCorrectionEnabled != oldValue.retrospectiveCorrectionEnabled {
+            logEvent("Retrospective correction enabled change")
         }
     }
 
@@ -127,6 +141,10 @@ final class AnalyticsManager {
 
     func didSetBolusFromWatch(_ units: Double) {
         logEvent("Bolus set", withProperties: ["source" : "Watch"], outOfSession: true)
+    }
+
+    func didFetchNewCGMData() {
+        logEvent("CGM Fetch", outOfSession: true)
     }
 
     func loopDidSucceed() {

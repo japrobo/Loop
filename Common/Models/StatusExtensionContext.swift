@@ -25,7 +25,8 @@ struct LoopContext {
 struct NetBasalContext {
     let rate: Double
     let percentage: Double
-    let startDate: Date
+    let start: Date
+    let end: Date
 }
 
 struct SensorDisplayableContext: SensorDisplayable {
@@ -58,13 +59,6 @@ struct PredictedGlucoseContext {
         }
         return result
     }
-}
-
-struct DatedRangeContext {
-    let startDate: Date
-    let endDate: Date
-    let minValue: Double
-    let maxValue: Double
 }
 
 extension ReservoirContext: RawRepresentable {
@@ -122,7 +116,8 @@ extension NetBasalContext: RawRepresentable {
         return [
             "rate": rate,
             "percentage": percentage,
-            "startDate": startDate
+            "start": start,
+            "end": end
         ]
     }
 
@@ -130,14 +125,16 @@ extension NetBasalContext: RawRepresentable {
         guard
             let rate       = rawValue["rate"] as? Double,
             let percentage = rawValue["percentage"] as? Double,
-            let startDate  = rawValue["startDate"] as? Date
+            let start      = rawValue["start"] as? Date,
+            let end        = rawValue["end"] as? Date
         else {
             return nil
         }
 
         self.rate = rate
         self.percentage = percentage
-        self.startDate = startDate
+        self.start = start
+        self.end = end
     }
 }
 
@@ -239,9 +236,9 @@ extension PredictedGlucoseContext: RawRepresentable {
 }
 
 extension DatedRangeContext: RawRepresentable {
-    typealias RawValue = [String: Any]
+    public typealias RawValue = [String: Any]
 
-    var rawValue: RawValue {
+    public var rawValue: RawValue {
         return [
             "startDate": startDate,
             "endDate": endDate,
@@ -250,7 +247,7 @@ extension DatedRangeContext: RawRepresentable {
         ]
     }
 
-    init?(rawValue: RawValue) {
+    public init?(rawValue: RawValue) {
         guard
             let startDate = rawValue["startDate"] as? Date,
             let endDate = rawValue["endDate"] as? Date,
@@ -260,16 +257,13 @@ extension DatedRangeContext: RawRepresentable {
             return nil
         }
 
-        self.startDate = startDate
-        self.endDate = endDate
-        self.minValue = minValue
-        self.maxValue = maxValue
+        self.init(startDate: startDate, endDate: endDate, minValue: minValue, maxValue: maxValue)
     }
 }
 
 struct StatusExtensionContext: RawRepresentable {
     typealias RawValue = [String: Any]
-    private let version = 3
+    private let version = 4
 
     var glucose: [GlucoseContext]?
     var predictedGlucose: PredictedGlucoseContext?
@@ -277,6 +271,7 @@ struct StatusExtensionContext: RawRepresentable {
     var loop: LoopContext?
     var netBasal: NetBasalContext?
     var batteryPercentage: Double?
+    var activeInsulin: Double?
     var targetRanges: [DatedRangeContext]?
     var temporaryOverride: DatedRangeContext?
     var sensor: SensorDisplayableContext?
@@ -289,7 +284,7 @@ struct StatusExtensionContext: RawRepresentable {
         }
 
         if let rawValue = rawValue["glucose"] as? [GlucoseContext.RawValue] {
-            glucose = rawValue.flatMap({return GlucoseContext(rawValue: $0)})
+            glucose = rawValue.compactMap({return GlucoseContext(rawValue: $0)})
         }
 
         if let rawValue = rawValue["predictedGlucose"] as? PredictedGlucoseContext.RawValue {
@@ -310,8 +305,10 @@ struct StatusExtensionContext: RawRepresentable {
 
         batteryPercentage = rawValue["batteryPercentage"] as? Double
 
+        activeInsulin = rawValue["activeInsulin"] as? Double
+        
         if let rawValue = rawValue["targetRanges"] as? [DatedRangeContext.RawValue] {
-            targetRanges = rawValue.flatMap({return DatedRangeContext(rawValue: $0)})
+            targetRanges = rawValue.compactMap({return DatedRangeContext(rawValue: $0)})
         }
 
         if let rawValue = rawValue["temporaryOverride"] as? DatedRangeContext.RawValue {
@@ -334,6 +331,7 @@ struct StatusExtensionContext: RawRepresentable {
         raw["loop"] = loop?.rawValue
         raw["netBasal"] = netBasal?.rawValue
         raw["batteryPercentage"] = batteryPercentage
+        raw["activeInsulin"] = activeInsulin
         raw["targetRanges"] = targetRanges?.map({return $0.rawValue})
         raw["temporaryOverride"] = temporaryOverride?.rawValue
         raw["sensor"] = sensor?.rawValue

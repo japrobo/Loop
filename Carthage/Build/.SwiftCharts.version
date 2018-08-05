@@ -1,22 +1,21 @@
 {
-  "commitish" : "0.6",
-  "iOS" : [
-    {
-      "hash" : "326259aba63578ffb93455bb07d2a1919e68d92157e02941c1628fd7704e1efa",
-      "name" : "SwiftCharts"
-    }
+  "Mac" : [
+
   ],
-  "xcodeVersion" : "Xcode 8.3.2\nBuild version 8E2002",
   "watchOS" : [
 
   ],
   "tvOS" : [
     {
-      "hash" : "1449a06dc971aeecdf02272698471b91cb6988ea0ef25e474d9e3d3db1e949b3",
-      "name" : "SwiftCharts"
+      "name" : "SwiftCharts",
+      "hash" : "89105ffbd390eb5cad0e5a73421b7a6e85064b3b0d9f78153b64261cfb932425"
     }
   ],
-  "Mac" : [
-
+  "commitish" : "6b55a26a7b0b95e49202ddc1db5404702fce114f",
+  "iOS" : [
+    {
+      "name" : "SwiftCharts",
+      "hash" : "09c973532129d22bb0757f475ed90e0e207e00b80d02e1ec01d6291fa6564636"
+    }
   ]
 }

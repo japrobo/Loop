@@ -9,11 +9,13 @@ import G4ShareSpy
 import HealthKit
 import LoopUI
 import ShareClient
-import xDripG5
+import CGMBLEKit
 
 
 class DexCGMManager: CGMManager {
-    var providesBLEHeartbeat: Bool = true
+    var providesBLEHeartbeat: Bool {
+        return false
+    }
 
     weak var delegate: CGMManagerDelegate? {
         didSet {
@@ -32,6 +34,10 @@ class DexCGMManager: CGMManager {
 
     var sensorState: SensorDisplayable? {
         return shareManager?.sensorState
+    }
+
+    var managedDataInterval: TimeInterval? {
+        return shareManager?.managedDataInterval
     }
 
     fileprivate var shareManager: ShareClientManager? = ShareClientManager()
@@ -53,13 +59,15 @@ class DexCGMManager: CGMManager {
 final class ShareClientManager: CGMManager {
     weak var delegate: CGMManagerDelegate?
 
-    var providesBLEHeartbeat = false
+    let providesBLEHeartbeat = false
 
     var sensorState: SensorDisplayable? {
         return latestBackfill
     }
 
-    private var latestBackfill: ShareGlucose?
+    let managedDataInterval: TimeInterval? = nil
+
+    fileprivate var latestBackfill: ShareGlucose?
 
     func fetchNewDataIfNeeded(with deviceManager: DeviceDataManager, _ completion: @escaping (CGMResult) -> Void) {
         guard let shareClient = deviceManager.remoteDataManager.shareService.client else {
@@ -85,7 +93,7 @@ final class ShareClientManager: CGMManager {
 
             // Ignore glucose values that are up to a minute newer than our previous value, to account for possible time shifting in Share data
             let startDate = self.delegate?.startDateToFilterNewData(for: self)?.addingTimeInterval(TimeInterval(minutes: 1))
-            let newGlucose = glucose.filterDateRange(startDate, nil).map {
+            let newGlucose = glucose.filterDateRange(startDate, nil).filter({ $0.isStateValid }).map {
                 return (quantity: $0.quantity, date: $0.startDate, isDisplayOnly: false)
             }
 
@@ -108,41 +116,77 @@ final class ShareClientManager: CGMManager {
 
 
 final class G5CGMManager: DexCGMManager, TransmitterDelegate {
+    func transmitter(_ transmitter: Transmitter, didReadBackfill glucose: [Glucose]) {
+        // Not implemented yet
+    }
+    
     private let transmitter: Transmitter?
+    let logger = DiagnosticLogger.shared!.forCategory("G5CGMManager")
 
     init(transmitterID: String?) {
         if let transmitterID = transmitterID {
-            self.transmitter = Transmitter(ID: transmitterID, passiveModeEnabled: true)
+            self.transmitter = Transmitter(id: transmitterID, passiveModeEnabled: true)
         } else {
             self.transmitter = nil
         }
 
         super.init()
 
-        self.providesBLEHeartbeat = self.transmitter != nil
-
         self.transmitter?.delegate = self
     }
 
-    override var sensorState: SensorDisplayable? {
-        return latestReading ?? super.sensorState
+    override var providesBLEHeartbeat: Bool {
+        return transmitter != nil && dataIsFresh
     }
 
-    private var latestReading: Glucose? {
-        didSet {
-            // Once we have our first reading, disable backfill
-            shareManager = nil
+    override var sensorState: SensorDisplayable? {
+        let transmitterDate = latestReading?.readDate ?? .distantPast
+        let shareDate = shareManager?.latestBackfill?.startDate ?? .distantPast
+
+        if transmitterDate > shareDate {
+            return latestReading
+        } else {
+            return super.sensorState
         }
+    }
+
+    override var managedDataInterval: TimeInterval? {
+        if let transmitter = transmitter, transmitter.passiveModeEnabled {
+            return .hours(3)
+        }
+
+        return super.managedDataInterval
+    }
+
+    private var latestReading: Glucose?
+
+    private var dataIsFresh: Bool {
+        guard let latestGlucose = latestReading,
+            latestGlucose.readDate > Date(timeIntervalSinceNow: .minutes(-4.5)) else {
+            return false
+        }
+
+        return true
+    }
+
+    override func fetchNewDataIfNeeded(with deviceManager: DeviceDataManager, _ completion: @escaping (CGMResult) -> Void) {
+        // If our last glucose was less than 4.5 minutes ago, don't fetch.
+        guard !dataIsFresh else {
+            completion(.noData)
+            return
+        }
+
+        super.fetchNewDataIfNeeded(with: deviceManager, completion)
     }
 
     override var device: HKDevice? {
         return HKDevice(
-            name: "xDripG5",
+            name: "CGMBLEKit",
             manufacturer: "Dexcom",
-            model: "G5 Mobile",
+            model: "G5/G6 Mobile",
             hardwareVersion: nil,
             firmwareVersion: nil,
-            softwareVersion: String(xDripG5VersionNumber),
+            softwareVersion: String(CGMBLEKitVersionNumber),
             localIdentifier: nil,
             udiDeviceIdentifier: "00386270000002"
         )
@@ -153,6 +197,7 @@ final class G5CGMManager: DexCGMManager, TransmitterDelegate {
             "## G5CGMManager",
             "latestReading: \(String(describing: latestReading))",
             "transmitter: \(String(describing: transmitter))",
+            "providesBLEHeartbeat: \(providesBLEHeartbeat)",
             super.debugDescription,
             ""
         ].joined(separator: "\n")
@@ -161,15 +206,28 @@ final class G5CGMManager: DexCGMManager, TransmitterDelegate {
     // MARK: - TransmitterDelegate
 
     func transmitter(_ transmitter: Transmitter, didError error: Error) {
+        logger.error(error)
         delegate?.cgmManager(self, didUpdateWith: .error(error))
     }
 
     func transmitter(_ transmitter: Transmitter, didRead glucose: Glucose) {
-        guard glucose != latestReading, let quantity = glucose.glucose else {
+        guard glucose != latestReading else {
             delegate?.cgmManager(self, didUpdateWith: .noData)
             return
         }
+
         latestReading = glucose
+
+        guard glucose.state.hasReliableGlucose else {
+            logger.error(String(describing: glucose.state))
+            delegate?.cgmManager(self, didUpdateWith: .error(CalibrationError.unreliableState(glucose.state)))
+            return
+        }
+        
+        guard let quantity = glucose.glucose else {
+            delegate?.cgmManager(self, didUpdateWith: .noData)
+            return
+        }
 
         self.delegate?.cgmManager(self, didUpdateWith: .newData([
             (quantity: quantity, date: glucose.readDate, isDisplayOnly: glucose.isDisplayOnly)
@@ -177,6 +235,7 @@ final class G5CGMManager: DexCGMManager, TransmitterDelegate {
     }
 
     func transmitter(_ transmitter: Transmitter, didReadUnknownData data: Data) {
+        logger.error("Unknown sensor data: " + data.hexadecimalString)
         // This can be used for protocol discovery, but isn't necessary for normal operation
     }
 }
@@ -191,15 +250,37 @@ final class G4CGMManager: DexCGMManager, ReceiverDelegate {
         receiver.delegate = self
     }
 
+    override var providesBLEHeartbeat: Bool {
+        return dataIsFresh
+    }
+
     override var sensorState: SensorDisplayable? {
         return latestReading ?? super.sensorState
     }
 
-    private var latestReading: GlucoseG4? {
-        didSet {
-            // Once we have our first reading, disable backfill
-            shareManager = nil
+    override var managedDataInterval: TimeInterval? {
+        return .hours(3)
+    }
+
+    private var latestReading: GlucoseG4?
+
+    private var dataIsFresh: Bool {
+        guard let latestGlucose = latestReading,
+            latestGlucose.startDate > Date(timeIntervalSinceNow: .minutes(-4.5)) else {
+                return false
         }
+
+        return true
+    }
+
+    override func fetchNewDataIfNeeded(with deviceManager: DeviceDataManager, _ completion: @escaping (CGMResult) -> Void) {
+        // If our last glucose was less than 4.5 minutes ago, don't fetch.
+        guard !dataIsFresh else {
+            completion(.noData)
+            return
+        }
+
+        super.fetchNewDataIfNeeded(with: deviceManager, completion)
     }
 
     override var device: HKDevice? {
@@ -221,6 +302,7 @@ final class G4CGMManager: DexCGMManager, ReceiverDelegate {
             "## G4CGMManager",
             "latestReading: \(String(describing: latestReading))",
             "receiver: \(receiver)",
+            "providesBLEHeartbeat: \(providesBLEHeartbeat)",
             super.debugDescription,
             ""
         ].joined(separator: "\n")
@@ -252,6 +334,39 @@ final class G4CGMManager: DexCGMManager, ReceiverDelegate {
 
     func receiver(_ receiver: Receiver, didLogBluetoothEvent event: String) {
         // Uncomment to debug communication
-        // NSLog(["event": "\(event)", "collectedAt": NSDateFormatter.ISO8601StrictDateFormatter().stringFromDate(NSDate())])
+        // NSLog("\(#function): \(event)")
+    }
+}
+
+enum CalibrationError: Error {
+    case unreliableState(CalibrationState)
+}
+
+extension CalibrationError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .unreliableState(let state):
+            return state.localizedDescription
+        }
+    }
+}
+
+extension CalibrationState {
+    public var localizedDescription: String {
+        switch self {
+        case .known(let state):
+            switch state {
+            case .needCalibration7, .needCalibration14, .needFirstInitialCalibration, .needSecondInitialCalibration, .calibrationError8, .calibrationError9, .calibrationError10, .calibrationError13:
+                return NSLocalizedString("Sensor needs calibration", comment: "The description of sensor calibration state when sensor needs calibration.")
+            case .ok:
+                return NSLocalizedString("Sensor calibration is OK", comment: "The description of sensor calibration state when sensor calibration is ok.")
+            case .stopped, .sensorFailure11, .sensorFailure12, .sessionFailure15, .sessionFailure16, .sessionFailure17:
+                return NSLocalizedString("Sensor is stopped", comment: "The description of sensor calibration state when sensor sensor is stopped.")
+            case .warmup, .questionMarks:
+                return NSLocalizedString("Sensor is warming up", comment: "The description of sensor calibration state when sensor sensor is warming up.")
+            }
+        case .unknown(let rawValue):
+            return String(format: NSLocalizedString("Sensor is in unknown state %1$d", comment: "The description of sensor calibration state when raw value is unknown. (1: missing data details)"), rawValue)
+        }
     }
 }

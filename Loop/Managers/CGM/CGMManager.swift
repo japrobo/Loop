@@ -38,10 +38,13 @@ protocol CGMManagerDelegate: class {
 
 
 protocol CGMManager: CustomDebugStringConvertible {
-    weak var delegate: CGMManagerDelegate? { get set }
+    var delegate: CGMManagerDelegate? { get set }
 
     /// Whether the device is capable of waking the app
     var providesBLEHeartbeat: Bool { get }
+
+    /// The length of time to keep samples in HealthKit before removal. Return nil to never remove samples.
+    var managedDataInterval: TimeInterval? { get }
 
     var sensorState: SensorDisplayable? { get }
 

@@ -13,6 +13,8 @@ import HealthKit
 import InsulinKit
 import LoopKit
 import RileyLinkKit
+import RileyLinkBLEKit
+
 
 final class NightscoutDataManager {
 
@@ -37,35 +39,47 @@ final class NightscoutDataManager {
             return
         }
 
-        deviceDataManager.loopManager.getLoopState { (_, state) in
+        deviceDataManager.loopManager.getLoopState { (manager, state) in
             var loopError = state.error
-            let recommendation: Double?
+            let recommendedBolus: Double?
 
-            do {
-                recommendation = try state.recommendBolus().amount
-            } catch let error {
-                recommendation = nil
+            recommendedBolus = state.recommendedBolus?.recommendation.amount
 
-                if loopError == nil {
-                    loopError = error
+            let carbsOnBoard = state.carbsOnBoard
+            let predictedGlucose = state.predictedGlucose
+            let recommendedTempBasal = state.recommendedTempBasal
+            let lastTempBasal = state.lastTempBasal
+
+            manager.doseStore.insulinOnBoard(at: Date()) { (result) in
+                let insulinOnBoard: InsulinValue?
+
+                switch result {
+                case .success(let value):
+                    insulinOnBoard = value
+                case .failure(let error):
+                    insulinOnBoard = nil
+
+                    if loopError == nil {
+                        loopError = error
+                    }
                 }
-            }
 
-            self.uploadLoopStatus(
-                insulinOnBoard: state.insulinOnBoard,
-                carbsOnBoard: state.carbsOnBoard,
-                predictedGlucose: state.predictedGlucose,
-                recommendedTempBasal: state.recommendedTempBasal,
-                recommendedBolus: recommendation,
-                lastTempBasal: state.lastTempBasal,
-                loopError: loopError
-            )
+                self.uploadLoopStatus(
+                    insulinOnBoard: insulinOnBoard,
+                    carbsOnBoard: carbsOnBoard,
+                    predictedGlucose: predictedGlucose,
+                    recommendedTempBasal: recommendedTempBasal,
+                    recommendedBolus: recommendedBolus,
+                    lastTempBasal: lastTempBasal,
+                    loopError: loopError
+                )
+            }
         }
     }
     
     private var lastTempBasalUploaded: DoseEntry?
 
-    func uploadLoopStatus(insulinOnBoard: InsulinValue? = nil, carbsOnBoard: CarbValue? = nil, predictedGlucose: [GlucoseValue]? = nil, recommendedTempBasal: LoopDataManager.TempBasalRecommendation? = nil, recommendedBolus: Double? = nil, lastTempBasal: DoseEntry? = nil, loopError: Error? = nil) {
+    func uploadLoopStatus(insulinOnBoard: InsulinValue? = nil, carbsOnBoard: CarbValue? = nil, predictedGlucose: [GlucoseValue]? = nil, recommendedTempBasal: (recommendation: TempBasalRecommendation, date: Date)? = nil, recommendedBolus: Double? = nil, lastTempBasal: DoseEntry? = nil, loopError: Error? = nil) {
 
         guard deviceDataManager.remoteDataManager.nightscoutService.uploader != nil else {
             return
@@ -99,17 +113,16 @@ final class NightscoutDataManager {
 
         let recommended: RecommendedTempBasal?
 
-        if let recommendation = recommendedTempBasal {
-            recommended = RecommendedTempBasal(timestamp: recommendation.recommendedDate, rate: recommendation.rate, duration: recommendation.duration)
+        if let (recommendation: recommendation, date: date) = recommendedTempBasal {
+            recommended = RecommendedTempBasal(timestamp: date, rate: recommendation.unitsPerHour, duration: recommendation.duration)
         } else {
             recommended = nil
         }
 
         let loopEnacted: LoopEnacted?
-        if let tempBasal = lastTempBasal, tempBasal.unit == .unitsPerHour &&
-            lastTempBasalUploaded?.startDate != tempBasal.startDate {
+        if let tempBasal = lastTempBasal, lastTempBasalUploaded?.startDate != tempBasal.startDate {
             let duration = tempBasal.endDate.timeIntervalSince(tempBasal.startDate)
-            loopEnacted = LoopEnacted(rate: tempBasal.value, duration: duration, timestamp: tempBasal.startDate, received:
+            loopEnacted = LoopEnacted(rate: tempBasal.unitsPerHour, duration: duration, timestamp: tempBasal.startDate, received:
                 true)
             lastTempBasalUploaded = tempBasal
         } else {
@@ -138,7 +151,7 @@ final class NightscoutDataManager {
         return UploaderStatus(name: uploaderDevice.name, timestamp: Date(), battery: battery)
     }
 
-    func uploadDeviceStatus(_ pumpStatus: NightscoutUploadKit.PumpStatus? = nil, loopStatus: LoopStatus? = nil, rileylinkDevice: RileyLinkKit.RileyLinkDevice? = nil, includeUploaderStatus: Bool = true) {
+    func uploadDeviceStatus(_ pumpStatus: NightscoutUploadKit.PumpStatus? = nil, loopStatus: LoopStatus? = nil, rileylinkDevice: RileyLinkDevice.Status? = nil, deviceState: DeviceState? = nil, includeUploaderStatus: Bool = true) {
 
         guard let uploader = deviceDataManager.remoteDataManager.nightscoutService.uploader else {
             return
@@ -158,7 +171,15 @@ final class NightscoutDataManager {
         var radioAdapter: NightscoutUploadKit.RadioAdapter? = nil
 
         if let device = rileylinkDevice {
-            radioAdapter = NightscoutUploadKit.RadioAdapter(hardware: "RileyLink", frequency: device.radioFrequency, name: device.name ?? "Unknown", lastTuned: device.lastTuned, firmwareVersion: device.firmwareVersion ?? "Unknown", RSSI: device.RSSI, pumpRSSI: device.pumpRSSI)
+            radioAdapter = NightscoutUploadKit.RadioAdapter(
+                hardware: "RileyLink",
+                frequency: deviceState?.lastValidFrequency?.value,
+                name: device.name ?? "Unknown",
+                lastTuned: deviceState?.lastTuned,
+                firmwareVersion: device.firmwareDescription,
+                RSSI: nil, // TODO: device.RSSI,
+                pumpRSSI: nil // TODO: device.pumpRSSI
+            )
         }
 
         // Build DeviceStatus
